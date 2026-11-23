@@ -178,8 +178,44 @@ public:
     // Appends primitive indicies whose bounds intersect with the given queryBounds to candidates.
     // Returns the number of intersection candidates found
     uint32_t queryIntersecting(const AABB<float>& queryBounds, std::vector<uint32_t>& candidates) {
-        // TODO -- do not use recursion, but you may emulate it yourself.
-        return 0;
+        uint32_t found = 0;
+        // A stack frame is the node to visit together with the cell region it covers, which is
+        // not stored in the node (it is derived while descending).
+        std::vector<std::pair<uint32_t, AABB<float>>> stack;
+        stack.push_back({0, mBounds});
+        while (!stack.empty()) {
+            auto [nodeIdx, cellBounds] = stack.back();
+            stack.pop_back();
+
+            const QuadTreeNode& node = mNodes[nodeIdx];
+            if (!cellBounds.intersects(queryBounds)) {
+                continue;
+            }
+
+            // This node's own list holds the primitives which straddle its grid; visiting a node
+            // means every one of those is a candidate.
+            for (uint32_t primIdx = node.primitivesIdx; primIdx != INVALID_IDX;
+                 primIdx = mNextPrimitiveIdx[primIdx]) {
+                if (mPrimitiveBounds[primIdx].intersects(queryBounds)) {
+                    candidates.push_back(primIdx);
+                    ++found;
+                }
+            }
+
+            if (node.isLeaf()) {
+                continue;
+            }
+            // Every primitive stored at or below a child is contained in that child's cell, so a
+            // child whose cell misses the query can be pruned wholesale.
+            for (uint32_t dir = 0; dir < 4; ++dir) {
+                AABB<float> childBounds = cellBounds;
+                aabbEnter(childBounds, static_cast<OrdinalDirection>(dir));
+                if (childBounds.intersects(queryBounds)) {
+                    stack.push_back({node.childIdx + dir, childBounds});
+                }
+            }
+        }
+        return found;
     }
 
     // suitable for sparse updates
@@ -290,15 +326,38 @@ private:
     // Precondition: currentCell contains query.
     OrdinalDirection aabbQueryQuadrant(const AABB<float>& query,
                                        const AABB<float>& currentCell) const {
-        return {};
-    };
-    // TODO
+        const sf::Vector2f middle = currentCell.middle();
+        // The cell is split by the vertical line x = middle.x and the horizontal line
+        // y = middle.y; crossing either means the query cannot be pushed into a single child.
+        const bool westOfMiddle = query.maxPoint.x <= middle.x;
+        const bool eastOfMiddle = query.minPoint.x >= middle.x;
+        const bool northOfMiddle = query.maxPoint.y <= middle.y;  // SFML y grows downwards
+        const bool southOfMiddle = query.minPoint.y >= middle.y;
+        if (!(westOfMiddle || eastOfMiddle) || !(northOfMiddle || southOfMiddle)) {
+            return INVALID_DIRECTION;
+        }
+        if (northOfMiddle) {
+            return westOfMiddle ? NW : NE;
+        }
+        return westOfMiddle ? SW : SE;
+    }
 
     // modifies a given AABB to obtain the resulting AABB if we were entering the cell on its
     // "direction" quadrant
     // Precondition: direction is not INVALID
-    void aabbEnter(AABB<float>& bounds, OrdinalDirection direction) const {};
-    // TODO
+    void aabbEnter(AABB<float>& bounds, OrdinalDirection direction) const {
+        const sf::Vector2f middle = bounds.middle();
+        if (direction == NW || direction == SW) {
+            bounds.maxPoint.x = middle.x;  // keep the western half
+        } else {
+            bounds.minPoint.x = middle.x;  // keep the eastern half
+        }
+        if (direction == NW || direction == NE) {
+            bounds.maxPoint.y = middle.y;  // keep the northern half
+        } else {
+            bounds.minPoint.y = middle.y;  // keep the southern half
+        }
+    }
 
     AABB<float> mBounds;
     size_t mMaxPrimitivesPerLeaf;
